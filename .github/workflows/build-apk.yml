@@ -9,7 +9,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,44 +18,17 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.2'
-
-      - name: local.properties for CI
-        run: |
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --stacktrace --no-daemon
-        env:
-          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
-          API_BASE: ${{ secrets.API_BASE }}
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wasalny-v4-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: Wasalny-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Release
-        if: success() && github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v4.1.1-${{ github.run_number }}
-          name: "وصلني V4.1.1 - build ${{ github.run_number }}"
-          body: |
-            وصلني - سيدي سالم
-            - مربوط بالسيرفر
-            - تعامل مع نوم Render (timeout + retry)
-            - APK جاهز للتثبيت
-          files: app/build/outputs/apk/debug/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
