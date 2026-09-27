@@ -265,8 +265,8 @@ class FirebaseRidesRepository(
                 .whereEqualTo("approved", true)
                 .whereEqualTo("available", true)
                 .orderBy("geohash")
-                .startAt(bound.startValue)
-                .endAt(bound.endValue)
+                .startAt(bound.startHash)
+                .endAt(bound.endHash)
                 .get()
                 .await()
             result.documents.forEach { doc ->

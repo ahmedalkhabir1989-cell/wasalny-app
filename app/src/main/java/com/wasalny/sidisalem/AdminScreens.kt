@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
+import com.google.firebase.FirebaseException
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.PhoneAuthCredential
 import com.google.firebase.auth.PhoneAuthOptions
@@ -132,7 +133,7 @@ fun AdminLoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
                                 finishCredential(credential)
                             }
 
-                            override fun onVerificationFailed(exception: Exception) {
+                            override fun onVerificationFailed(exception: FirebaseException) {
                                 busy = false
                                 error = exception.localizedMessage ?: "فشل إرسال كود التحقق"
                             }

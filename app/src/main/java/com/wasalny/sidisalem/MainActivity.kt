@@ -353,7 +353,7 @@ fun BottomBarV4(nav: NavController, role: String) {
         )
     }
     val backStack by nav.currentBackStackEntryAsState()
-    val current = backStack?.destination?.route
+    val current = backStack?.destination?.route?.substringBefore('?')
     NavigationBar {
         items.forEach { (route, label, icon) ->
             NavigationBarItem(
