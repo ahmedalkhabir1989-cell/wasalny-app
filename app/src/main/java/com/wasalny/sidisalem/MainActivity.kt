@@ -146,6 +146,8 @@ fun AppV4() {
     val navController = rememberNavController()
     val context = LocalContext.current
     var role by remember { mutableStateOf<String?>(null) }
+    var adminMode by remember { mutableStateOf(false) }
+    var showAdminLogin by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var authError by remember { mutableStateOf<String?>(null) }
     var authAttempt by remember { mutableIntStateOf(0) }
@@ -176,8 +178,25 @@ fun AppV4() {
         return
     }
     MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF0D7C3E))) {
-        if (role == null) {
-            WelcomeV4(onSelect = { r -> role = r })
+        if (adminMode) {
+            AdminPanel {
+                FirebaseAuth.getInstance().signOut()
+                adminMode = false
+                role = null
+            }
+        } else if (showAdminLogin) {
+            AdminLoginScreen(
+                onBack = { showAdminLogin = false },
+                onSuccess = {
+                    showAdminLogin = false
+                    adminMode = true
+                }
+            )
+        } else if (role == null) {
+            WelcomeV4(
+                onSelect = { r -> role = r },
+                onAdminRequest = { showAdminLogin = true }
+            )
         } else {
             Scaffold(bottomBar = { BottomBarV4(navController, role!!) }) { padding ->
                 NavHost(
@@ -230,7 +249,9 @@ fun AppV4() {
                     }
                     composable("wallet") { WalletV4() }
                     composable("account") {
-                        AccountV4 {
+                        AccountV4(
+                            onAdminRequest = { showAdminLogin = true }
+                        ) {
                             navController.navigate("home") {
                                 popUpTo("home") { inclusive = false }
                                 launchSingleTop = true
@@ -246,9 +267,10 @@ fun AppV4() {
 }
 
 @Composable
-fun WelcomeV4(onSelect: (String) -> Unit) {
+fun WelcomeV4(onSelect: (String) -> Unit, onAdminRequest: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    var secretTaps by remember { mutableIntStateOf(0) }
     Column(
         Modifier
             .fillMaxSize()
@@ -257,7 +279,19 @@ fun WelcomeV4(onSelect: (String) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("🕌 وصلني", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0D7C3E))
+        Text(
+            "🕌 وصلني",
+            fontSize = 36.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF0D7C3E),
+            modifier = Modifier.clickable {
+                secretTaps++
+                if (secretTaps >= 7) {
+                    secretTaps = 0
+                    onAdminRequest()
+                }
+            }
+        )
         Text("سيدي سالم - شبكة أمان", fontSize = 16.sp, color = Color.Gray)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -822,12 +856,13 @@ fun WalletV4() {
 }
 
 @Composable
-fun AccountV4(onRoleChanged: () -> Unit) {
+fun AccountV4(onAdminRequest: () -> Unit, onRoleChanged: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf(false) }
+    var secretTaps by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(Unit) {
         name = getUserName(ctx)
@@ -841,7 +876,18 @@ fun AccountV4(onRoleChanged: () -> Unit) {
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
-        Text("🛡️ أماني وحسابي", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "🛡️ أماني وحسابي",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.clickable {
+                secretTaps++
+                if (secretTaps >= 7) {
+                    secretTaps = 0
+                    onAdminRequest()
+                }
+            }
+        )
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = name,

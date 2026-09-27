@@ -48,11 +48,60 @@ data class DriverRideRequest(
     val status: String
 )
 
+data class DriverCandidate(
+    val uid: String,
+    val displayName: String,
+    val approved: Boolean,
+    val available: Boolean,
+    val lat: Double,
+    val lon: Double,
+    val updatedAt: Long?
+)
+
 class FirebaseRidesRepository(
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
 ) {
     private val rides get() = db.collection("rides")
     private val drivers get() = db.collection("drivers")
+
+    suspend fun isAdmin(uid: String): Boolean {
+        val admin = db.collection("admins").document(uid).get().await()
+        return admin.exists() && admin.getString("role") == "admin" && admin.getBoolean("active") == true
+    }
+
+    fun listenPendingDrivers(
+        onChange: (List<DriverCandidate>) -> Unit,
+        onError: (Exception) -> Unit
+    ): ListenerRegistration {
+        return drivers.whereEqualTo("approved", false)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    onError(error)
+                    return@addSnapshotListener
+                }
+                onChange(snapshot?.documents.orEmpty().mapNotNull { document ->
+                    DriverCandidate(
+                        uid = document.id,
+                        displayName = document.getString("displayName") ?: "بدون اسم",
+                        approved = document.getBoolean("approved") ?: false,
+                        available = document.getBoolean("available") ?: false,
+                        lat = document.getDouble("lat") ?: 0.0,
+                        lon = document.getDouble("lon") ?: 0.0,
+                        updatedAt = document.getTimestamp("updatedAt")?.toDate()?.time
+                    )
+                })
+            }
+    }
+
+    suspend fun setDriverApproval(uid: String, approved: Boolean) {
+        drivers.document(uid).update(
+            mapOf(
+                "approved" to approved,
+                "available" to false,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
+    }
 
     suspend fun signInAnonymously(): String {
         val auth = FirebaseAuth.getInstance()
