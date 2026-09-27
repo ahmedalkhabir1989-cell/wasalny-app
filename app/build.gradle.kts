@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -14,19 +15,12 @@ android {
         versionCode = 6
         versionName = "4.1.1"
 
-        // اقرأ مفتاح الخرائط من Secrets / env / gradle.properties
-        val mapsKey = providers.gradleProperty("MAPS_API_KEY")
-            .orElse(providers.environmentVariable("MAPS_API_KEY"))
-            .orElse("YOUR_GOOGLE_MAPS_API_KEY_HERE")
-            .get()
+        // Read the Maps key from Secrets, environment, or gradle.properties.
+        val mapsKey = providers.gradleProperty("MAPS_API_KEY").orNull?.takeIf { it.isNotBlank() }
+            ?: providers.environmentVariable("MAPS_API_KEY").orNull?.takeIf { it.isNotBlank() }
+            ?: "YOUR_GOOGLE_MAPS_API_KEY_HERE"
         manifestPlaceholders["MAPS_API_KEY"] = mapsKey
 
-        // لينك السيرفر — غيّره هنا أو عبر -PAPI_BASE=...
-        val apiBase = providers.gradleProperty("API_BASE")
-            .orElse(providers.environmentVariable("API_BASE"))
-            .orElse("https://wasalny-sidi-salem.onrender.com")
-            .get()
-        buildConfigField("String", "API_BASE", "\"$apiBase\"")
     }
 
     buildTypes {
@@ -80,4 +74,8 @@ dependencies {
     implementation("com.google.maps.android:maps-compose:4.3.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-firestore-ktx")
+    implementation("com.firebase:geofire-android-common:3.2.0")
 }

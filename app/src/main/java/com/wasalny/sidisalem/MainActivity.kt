@@ -35,14 +35,19 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.navigation.NavController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
+import com.google.firebase.auth.FirebaseAuth
+import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -50,13 +55,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
-import java.util.UUID
 import kotlin.math.*
 
 val Context.dataStore by preferencesDataStore(name = "wasalny_v4")
@@ -66,309 +65,74 @@ object Config {
     const val LON = 30.786165
     const val RADIUS_KM = 5.0
     const val PHONE = "01069631950"
-    const val BASE = 10.0
-    const val PER_KM = 5.0
-    // من BuildConfig (build.gradle.kts) — غيّره هناك أو بـ -PAPI_BASE=https://...
-    val API_BASE: String = try {
-        BuildConfig.API_BASE
-    } catch (_: Throwable) {
-        "https://wasalny-sidi-salem.onrender.com"
-    }
     val CENTER = LatLng(LAT, LON)
 }
 
 data class FavPlace(val name: String, val address: String, val lat: Double, val lon: Double)
 
-data class RideItem(
-    val id: Int,
-    val from: String,
-    val to: String,
-    val price: Int,
-    val status: String,
-    val securityCode: String,
-    val driverName: String?,
-    val distanceKm: Double,
-    val createdAt: String?
-)
-
 fun distKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-    val R = 6371.0
+    val earthRadiusKm = 6371.0
     val dLat = Math.toRadians(lat2 - lat1)
     val dLon = Math.toRadians(lon2 - lon1)
-    val a = sin(dLat / 2) * sin(dLat / 2) +
-            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
-            sin(dLon / 2) * sin(dLon / 2)
-    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
-}
-
-fun calcPrice(km: Double, type: String = "now"): Int {
-    var p = Config.BASE + km * Config.PER_KM
-    if (type == "school") {
-        p *= 0.8
-        p = max(p, 15.0)
-    }
-    p = round(p / 5) * 5
-    return max(p.toInt(), 10)
+    val a = sin(dLat / 2).pow(2) + cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2)
+    return earthRadiusKm * 2 * atan2(sqrt(a), sqrt(1 - a))
 }
 
 fun inside(lat: Double, lon: Double) =
     distKm(lat, lon, Config.LAT, Config.LON) <= Config.RADIUS_KM
 
-suspend fun geocode(context: Context, ll: LatLng): String = withContext(Dispatchers.IO) {
+suspend fun geocode(context: Context, point: LatLng): String = withContext(Dispatchers.IO) {
     try {
-        val g = Geocoder(context, Locale("ar"))
         @Suppress("DEPRECATION")
-        val l = g.getFromLocation(ll.latitude, ll.longitude, 1)
-        if (!l.isNullOrEmpty()) l[0].getAddressLine(0)
-            ?: "%.4f, %.4f".format(ll.latitude, ll.longitude)
-        else "%.4f, %.4f".format(ll.latitude, ll.longitude)
+        val addresses = Geocoder(context, Locale("ar")).getFromLocation(point.latitude, point.longitude, 1)
+        addresses?.firstOrNull()?.getAddressLine(0)
+            ?: "%.4f, %.4f".format(point.latitude, point.longitude)
     } catch (_: Exception) {
-        "%.4f, %.4f".format(ll.latitude, ll.longitude)
+        "%.4f, %.4f".format(point.latitude, point.longitude)
     }
 }
 
-suspend fun getFavs(ctx: Context): List<FavPlace> {
-    val s = ctx.dataStore.data.first()[stringPreferencesKey("favs")] ?: "[]"
-    val arr = JSONArray(s)
-    return (0 until arr.length()).map {
-        val o = arr.getJSONObject(it)
-        FavPlace(o.getString("name"), o.getString("address"), o.getDouble("lat"), o.getDouble("lon"))
+suspend fun getFavs(context: Context): List<FavPlace> {
+    val raw = context.dataStore.data.first()[stringPreferencesKey("favs")] ?: "[]"
+    val array = JSONArray(raw)
+    return (0 until array.length()).map { index ->
+        val item = array.getJSONObject(index)
+        FavPlace(item.getString("name"), item.getString("address"), item.getDouble("lat"), item.getDouble("lon"))
     }
 }
 
-suspend fun saveFav(ctx: Context, p: FavPlace) {
-    val cur = ctx.dataStore.data.first()[stringPreferencesKey("favs")] ?: "[]"
-    val arr = JSONArray(cur)
-    val na = JSONArray()
-    for (i in 0 until arr.length()) {
-        val o = arr.getJSONObject(i)
-        if (o.getString("name") != p.name) na.put(o)
+suspend fun saveFav(context: Context, place: FavPlace) {
+    val current = context.dataStore.data.first()[stringPreferencesKey("favs")] ?: "[]"
+    val old = JSONArray(current)
+    val next = JSONArray()
+    for (index in 0 until old.length()) {
+        val item = old.getJSONObject(index)
+        if (item.getString("name") != place.name) next.put(item)
     }
-    val o = JSONObject()
-    o.put("name", p.name)
-    o.put("address", p.address)
-    o.put("lat", p.lat)
-    o.put("lon", p.lon)
-    na.put(o)
-    ctx.dataStore.edit { it[stringPreferencesKey("favs")] = na.toString() }
+    next.put(JSONObject().apply {
+        put("name", place.name)
+        put("address", place.address)
+        put("lat", place.lat)
+        put("lon", place.lon)
+    })
+    context.dataStore.edit { it[stringPreferencesKey("favs")] = next.toString() }
 }
 
-suspend fun deleteFav(ctx: Context, name: String) {
-    val cur = ctx.dataStore.data.first()[stringPreferencesKey("favs")] ?: "[]"
-    val arr = JSONArray(cur)
-    val na = JSONArray()
-    for (i in 0 until arr.length()) {
-        val o = arr.getJSONObject(i)
-        if (o.getString("name") != name) na.put(o)
+suspend fun deleteFav(context: Context, name: String) {
+    val old = JSONArray(context.dataStore.data.first()[stringPreferencesKey("favs")] ?: "[]")
+    val next = JSONArray()
+    for (index in 0 until old.length()) {
+        val item = old.getJSONObject(index)
+        if (item.getString("name") != name) next.put(item)
     }
-    ctx.dataStore.edit { it[stringPreferencesKey("favs")] = na.toString() }
+    context.dataStore.edit { it[stringPreferencesKey("favs")] = next.toString() }
 }
 
-suspend fun getOrCreateUserId(ctx: Context): String {
-    val key = stringPreferencesKey("user_id")
-    val existing = ctx.dataStore.data.first()[key]
-    if (existing != null) return existing
-    val id = UUID.randomUUID().toString().take(12)
-    ctx.dataStore.edit { it[key] = id }
-    return id
-}
+suspend fun getUserName(context: Context): String =
+    context.dataStore.data.first()[stringPreferencesKey("user_name")] ?: "مستخدم"
 
-suspend fun getUserName(ctx: Context): String {
-    return ctx.dataStore.data.first()[stringPreferencesKey("user_name")] ?: "مستخدم"
-}
-
-suspend fun getUserPhone(ctx: Context): String {
-    return ctx.dataStore.data.first()[stringPreferencesKey("user_phone")] ?: ""
-}
-
-// ========== API Helpers (hardened for free-tier cold start) ==========
-private const val CONNECT_TIMEOUT_MS = 45000  // Render free cold start ~30-50s
-private const val READ_TIMEOUT_MS = 45000
-private const val MAX_RETRIES = 2
-
-fun isOnline(ctx: Context): Boolean {
-    return try {
-        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        val net = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(net) ?: return false
-        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    } catch (_: Exception) {
-        true // assume online if check fails
-    }
-}
-
-fun friendlyNetworkError(e: Exception?): String {
-    val msg = e?.message?.lowercase() ?: ""
-    return when {
-        msg.contains("timeout") || msg.contains("timed out") ->
-            "السيرفر بيستيقظ (مجاني على Render) — استنى 30 ثانية وحاول تاني"
-        msg.contains("unable to resolve") || msg.contains("unknown host") ->
-            "مفيش نت أو لينك السيرفر غلط — تأكد من API_BASE"
-        msg.contains("failed to connect") || msg.contains("connection") ->
-            "مفيش اتصال بالسيرفر — تأكد من النت أو إن السيرفر شغال"
-        else ->
-            "فشل الاتصال بالسيرفر — جرب تاني أو استخدم SMS بدون نت"
-    }
-}
-
-suspend fun apiRequest(
-    method: String,
-    path: String,
-    body: JSONObject? = null,
-    retries: Int = MAX_RETRIES
-): Pair<JSONObject?, String?> = withContext(Dispatchers.IO) {
-    var lastError: Exception? = null
-    repeat(retries) { attempt ->
-        try {
-            val url = URL("${Config.API_BASE}$path")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = method
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("Connection", "close")
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                if (body != null) {
-                    doOutput = true
-                }
-            }
-            if (body != null) {
-                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
-            }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val text = if (stream != null) {
-                BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-            } else ""
-            conn.disconnect()
-            if (text.isBlank()) {
-                return@withContext null to "رد فاضي من السيرفر"
-            }
-            val json = try {
-                JSONObject(text)
-            } catch (_: Exception) {
-                return@withContext null to "رد غير مفهوم من السيرفر"
-            }
-            if (code in 200..299) {
-                return@withContext json to null
-            }
-            val detail = json.optString("detail", "خطأ $code")
-            return@withContext json to detail
-        } catch (e: Exception) {
-            lastError = e
-            e.printStackTrace()
-            if (attempt < retries - 1) {
-                try {
-                    Thread.sleep(2000L * (attempt + 1))
-                } catch (_: InterruptedException) {
-                }
-            }
-        }
-    }
-    null to friendlyNetworkError(lastError)
-}
-
-suspend fun apiPost(path: String, body: JSONObject): JSONObject? {
-    val (json, err) = apiRequest("POST", path, body)
-    if (err != null && json == null) {
-        // wrap error so callers can show message
-        return JSONObject().put("_error", err).put("success", false).put("detail", err)
-    }
-    return json
-}
-
-suspend fun apiGet(path: String): JSONObject? {
-    val (json, err) = apiRequest("GET", path, null)
-    if (err != null && json == null) {
-        return JSONObject().put("_error", err).put("success", false).put("detail", err)
-    }
-    return json
-}
-
-
-
-suspend fun createRideOnServer(
-    customerId: String,
-    name: String,
-    phone: String,
-    fromAddr: String,
-    toAddr: String,
-    from: LatLng,
-    to: LatLng,
-    km: Double,
-    price: Int,
-    rideType: String,
-    femaleMode: Boolean,
-    withLuggage: Boolean
-): JSONObject? {
-    val body = JSONObject().apply {
-        put("customer_id", customerId)
-        put("customer_name", name)
-        put("customer_phone", phone.ifEmpty { "01000000000" })
-        put("from_address", fromAddr)
-        put("to_address", toAddr)
-        put("from_lat", from.latitude)
-        put("from_lon", from.longitude)
-        put("to_lat", to.latitude)
-        put("to_lon", to.longitude)
-        put("distance_km", km)
-        put("price", price)
-        put("ride_type", rideType)
-        put("female_mode", femaleMode)
-        put("with_luggage", withLuggage)
-    }
-    return apiPost("/api/rides/create", body)
-}
-
-suspend fun fetchCustomerRides(customerId: String): List<RideItem> {
-    val res = apiGet("/api/customer/$customerId/rides?limit=15") ?: return emptyList()
-    if (res.has("_error")) return emptyList()
-    val arr = res.optJSONArray("rides") ?: return emptyList()
-    return (0 until arr.length()).mapNotNull { i ->
-        val o = arr.optJSONObject(i) ?: return@mapNotNull null
-        RideItem(
-            id = o.optInt("id"),
-            from = o.optString("from_address"),
-            to = o.optString("to_address"),
-            price = o.optInt("price"),
-            status = o.optString("status"),
-            securityCode = o.optString("security_code"),
-            driverName = o.optString("driver_name").takeIf { it.isNotBlank() && it != "null" },
-            distanceKm = o.optDouble("distance_km"),
-            createdAt = o.optString("created_at").takeIf { it.isNotBlank() }
-        )
-    }
-}
-
-suspend fun fetchNearbyRides(lat: Double, lon: Double, femaleOnly: Boolean = false): List<RideItem> {
-    val path = "/api/rides/nearby?lat=$lat&lon=$lon&radius_km=5&female_only=$femaleOnly"
-    val res = apiGet(path) ?: return emptyList()
-    if (res.has("_error")) return emptyList()
-    val arr = res.optJSONArray("rides") ?: return emptyList()
-    return (0 until arr.length()).mapNotNull { i ->
-        val o = arr.optJSONObject(i) ?: return@mapNotNull null
-        RideItem(
-            id = o.optInt("id"),
-            from = o.optString("from_address"),
-            to = o.optString("to_address"),
-            price = o.optInt("price"),
-            status = o.optString("status"),
-            securityCode = o.optString("security_code"),
-            driverName = null,
-            distanceKm = o.optDouble("distance_to_driver_km", o.optDouble("distance_km")),
-            createdAt = o.optString("created_at").takeIf { it.isNotBlank() }
-        )
-    }
-}
-
-suspend fun acceptRideOnServer(rideId: Int, driverId: String, driverName: String): JSONObject? {
-    val body = JSONObject().apply {
-        put("ride_id", rideId)
-        put("driver_id", driverId)
-        put("driver_name", driverName)
-    }
-    return apiPost("/api/rides/accept", body)
-}
+suspend fun getUserPhone(context: Context): String =
+    context.dataStore.data.first()[stringPreferencesKey("user_phone")] ?: ""
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -383,14 +147,31 @@ fun AppV4() {
     val context = LocalContext.current
     var role by remember { mutableStateOf<String?>(null) }
     var loaded by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        val prefs = context.dataStore.data.first()
-        role = prefs[stringPreferencesKey("role")]
-        loaded = true
+    var authError by remember { mutableStateOf<String?>(null) }
+    var authAttempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(authAttempt) {
+        try {
+            FirebaseRidesRepository().signInAnonymously()
+            val prefs = context.dataStore.data.first()
+            role = prefs[stringPreferencesKey("role")]
+            loaded = true
+        } catch (e: Exception) {
+            authError = e.localizedMessage ?: "تعذر الاتصال بـ Firebase"
+        }
     }
     if (!loaded) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+            if (authError == null) {
+                CircularProgressIndicator()
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(authError!!, color = Color.Red, textAlign = TextAlign.Center)
+                    Button(onClick = {
+                        authError = null
+                        authAttempt++
+                    }) { Text("إعادة المحاولة") }
+                }
+            }
         }
         return
     }
@@ -405,10 +186,58 @@ fun AppV4() {
                     modifier = Modifier.padding(padding)
                 ) {
                     composable("home") { HomeV4(navController, role!!) }
-                    composable("map") { MapV4(role!!) }
-                    composable("rides") { RidesV4(navController, role!!) }
+                    composable(
+                        route = "map?destinationLat={destinationLat}&destinationLon={destinationLon}&destinationAddress={destinationAddress}",
+                        arguments = listOf(
+                            navArgument("destinationLat") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = null
+                            },
+                            navArgument("destinationLon") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = null
+                            },
+                            navArgument("destinationAddress") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = null
+                            }
+                        )
+                    ) { entry ->
+                        val lat = entry.arguments?.getString("destinationLat")?.toDoubleOrNull()
+                        val lon = entry.arguments?.getString("destinationLon")?.toDoubleOrNull()
+                        val address = entry.arguments?.getString("destinationAddress").orEmpty()
+                        val destination = if (lat != null && lon != null) {
+                            FavPlace("", address, lat, lon)
+                        } else null
+                        MapV4(role!!, destination) { rideId ->
+                            navController.navigate("rides?rideId=$rideId")
+                        }
+                    }
+                    composable(
+                        route = "rides?rideId={rideId}",
+                        arguments = listOf(
+                            navArgument("rideId") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = null
+                            }
+                        )
+                    ) { entry ->
+                        RidesV4(navController, role!!, entry.arguments?.getString("rideId"))
+                    }
                     composable("wallet") { WalletV4() }
-                    composable("account") { AccountV4(navController) }
+                    composable("account") {
+                        AccountV4 {
+                            navController.navigate("home") {
+                                popUpTo("home") { inclusive = false }
+                                launchSingleTop = true
+                            }
+                            role = null
+                        }
+                    }
                     composable("manage_favs") { ManageFavsV4() }
                 }
             }
@@ -521,12 +350,12 @@ fun HomeV4(nav: NavController, role: String) {
         item {
             Text("أهلاً 👋", fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Text(
-                "📍 سيدي سالم - 5 كم - شبكة أمان - خرائط جوجل 100%",
+                "📍 سيدي سالم - نطاق الخدمة 5 كم",
                 fontSize = 11.sp,
                 color = Color(0xFF0D7C3E)
             )
             Spacer(Modifier.height(8.dp))
-            Text("🏠 دوس تروح على طول - بدون كتابة", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text("🧭 اختار وجهتك من الأماكن المحفوظة", fontWeight = FontWeight.Bold, fontSize = 14.sp)
         }
         if (favs.isEmpty()) {
             item {
@@ -550,7 +379,12 @@ fun HomeV4(nav: NavController, role: String) {
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { nav.navigate("map") },
+                        .clickable {
+                            nav.navigate(
+                                "map?destinationLat=${fav.lat}&destinationLon=${fav.lon}" +
+                                        "&destinationAddress=${Uri.encode(fav.address)}"
+                            )
+                        },
                     colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
                 ) {
                     Row(
@@ -563,7 +397,7 @@ fun HomeV4(nav: NavController, role: String) {
                             Text(fav.name, fontWeight = FontWeight.Bold)
                             Text(fav.address, fontSize = 11.sp, color = Color.Gray, maxLines = 1)
                         }
-                        Text("روحني →", color = Color(0xFF0D7C3E), fontWeight = FontWeight.Bold)
+                        Text("استخدمها", color = Color(0xFF0D7C3E), fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -579,34 +413,12 @@ fun HomeV4(nav: NavController, role: String) {
 
 @Composable
 fun DriverHomeV4(nav: NavController) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var available by remember { mutableStateOf(true) }
-    var statusMsg by remember { mutableStateOf("جاهز لاستقبال الطلبات") }
-
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("🚖 وضع السائق", fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Text("سيدي سالم - شبكة أمان", fontSize = 12.sp, color = Color.Gray)
         Spacer(Modifier.height(16.dp))
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = if (available) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
-            ),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(Modifier.padding(16.dp)) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(if (available) "🟢 متاح" else "🔴 مش متاح", fontWeight = FontWeight.Bold)
-                    Switch(checked = available, onCheckedChange = { available = it })
-                }
-                Text(statusMsg, fontSize = 12.sp, color = Color.Gray)
-            }
-        }
-        Spacer(Modifier.height(16.dp))
+        Text("طلبات الرحلات", fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
         Button(
             onClick = { nav.navigate("rides") },
             modifier = Modifier.fillMaxWidth().height(52.dp)
@@ -620,19 +432,27 @@ fun DriverHomeV4(nav: NavController) {
 }
 
 @Composable
-fun MapV4(role: String) {
+fun MapV4(
+    role: String,
+    initialDestination: FavPlace? = null,
+    onRideCreated: (String) -> Unit
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val fused = remember { LocationServices.getFusedLocationProviderClient(ctx) }
     var pickup by remember { mutableStateOf<LatLng?>(null) }
-    var dropoff by remember { mutableStateOf<LatLng?>(null) }
+    var dropoff by remember(initialDestination) {
+        mutableStateOf(initialDestination?.let { LatLng(it.lat, it.lon) })
+    }
     var pickupAddr by remember { mutableStateOf("") }
-    var dropoffAddr by remember { mutableStateOf("") }
-    var selectingPickup by remember { mutableStateOf(true) }
-    var rideType by remember { mutableStateOf("now") }
+    var dropoffAddr by remember(initialDestination) {
+        mutableStateOf(initialDestination?.address.orEmpty())
+    }
+    var selectingPickup by remember(initialDestination) {
+        mutableStateOf(initialDestination == null)
+    }
     var femaleMode by remember { mutableStateOf(false) }
     var withLuggage by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf((1000..9999).random().toString()) }
     var showSave by remember { mutableStateOf(false) }
     var saveName by remember { mutableStateOf("") }
     var showConfirm by remember { mutableStateOf(false) }
@@ -641,16 +461,27 @@ fun MapV4(role: String) {
     val cam = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(Config.CENTER, 14.5f)
     }
+    val hasLocationPermission =
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
     val permLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-            if (perms[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            if (perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            ) {
                 scope.launch {
                     try {
-                        val loc = fused.lastLocation.await()
+                        val loc = fused.getCurrentLocation(
+                            Priority.PRIORITY_HIGH_ACCURACY,
+                            CancellationTokenSource().token
+                        ).await() ?: fused.lastLocation.await()
                         loc?.let {
                             val ll = LatLng(it.latitude, it.longitude)
                             pickup = ll
                             pickupAddr = geocode(ctx, ll)
+                            selectingPickup = false
                             cam.position = CameraPosition.fromLatLngZoom(ll, 16f)
                         }
                     } catch (_: Exception) {
@@ -659,11 +490,7 @@ fun MapV4(role: String) {
             }
         }
     LaunchedEffect(Unit) {
-        if (ContextCompat.checkSelfPermission(
-                ctx,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (!hasLocationPermission) {
             permLauncher.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -679,20 +506,23 @@ fun MapV4(role: String) {
                 dropoff!!.latitude, dropoff!!.longitude
             )
         else 0.0
-    val price = if (km > 0) calcPrice(km, rideType) else 0
     val isInside = pickup?.let { inside(it.latitude, it.longitude) } ?: true
 
     Box(Modifier.fillMaxSize()) {
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cam,
-            properties = MapProperties(isMyLocationEnabled = true),
-            uiSettings = MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = true),
+            properties = MapProperties(isMyLocationEnabled = hasLocationPermission),
+            uiSettings = MapUiSettings(
+                zoomControlsEnabled = false,
+                myLocationButtonEnabled = hasLocationPermission
+            ),
             onMapClick = { ll ->
                 scope.launch {
                     if (selectingPickup) {
                         pickup = ll
                         pickupAddr = geocode(ctx, ll)
+                        selectingPickup = false
                     } else {
                         dropoff = ll
                         dropoffAddr = geocode(ctx, ll)
@@ -773,31 +603,11 @@ fun MapV4(role: String) {
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        FilterChip(
-                            selected = rideType == "now",
-                            onClick = { rideType = "now" },
-                            label = { Text("حالاً", fontSize = 10.sp) }
-                        )
-                        FilterChip(
-                            selected = rideType == "scheduled",
-                            onClick = { rideType = "scheduled" },
-                            label = { Text("بموعد", fontSize = 10.sp) }
-                        )
-                        FilterChip(
-                            selected = rideType == "school",
-                            onClick = { rideType = "school" },
-                            label = { Text("مدارس -20%", fontSize = 10.sp) }
-                        )
-                        FilterChip(
-                            selected = withLuggage,
-                            onClick = { withLuggage = !withLuggage },
-                            label = { Text("📦 حمولة", fontSize = 10.sp) }
-                        )
-                    }
+                    FilterChip(
+                        selected = withLuggage,
+                        onClick = { withLuggage = !withLuggage },
+                        label = { Text("📦 حمولة", fontSize = 10.sp) }
+                    )
                 }
             }
         }
@@ -814,18 +624,12 @@ fun MapV4(role: String) {
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("%.2f كم".format(km), fontWeight = FontWeight.Bold)
-                        Text(
-                            "💰 $price ج",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            color = Color(0xFF0D7C3E)
-                        )
-                        Text("🔐 $code", fontSize = 12.sp)
+                        Text("المسافة: %.2f كم تقريباً".format(km), fontWeight = FontWeight.Bold)
+                        Text("السائقون يرسلون السعر", color = Color(0xFF0D7C3E), fontSize = 12.sp)
                     }
                     if (femaleMode)
                         Text(
-                            "👩 وضع الستات: سواق موثوق تقييمه من الستات فوق 4.8",
+                            "سيتم إرسال تفضيل وضع السيدات مع الطلب",
                             fontSize = 10.sp,
                             color = Color(0xFF880E4F)
                         )
@@ -859,16 +663,16 @@ fun MapV4(role: String) {
                                 )
                                 sms.putExtra(
                                     "sms_body",
-                                    "طلب توكتوك من $pickupAddr إلى $dropoffAddr - السعر $price ج"
+                                    "طلب مشوار من $pickupAddr إلى $dropoffAddr"
                                 )
                                 ctx.startActivity(sms)
                             },
                             modifier = Modifier.weight(1f)
-                        ) { Text("📱 SMS بدون نت", fontSize = 11.sp) }
+                        ) { Text("📱 طلب عبر SMS", fontSize = 11.sp) }
                     }
                 } else {
                     Text(
-                        "👆 اضغط على الخريطة تحدد من فين لفين\n💾 احفظه كـ بيت عشان تطلبه بضغطة واحدة بعد كده\n🎤 قريباً: اطلب بصوتك - للستات وكبار السن",
+                        "👆 اضغط على الخريطة لتحديد نقطة البداية والوجهة\n💾 احفظ الوجهات المتكررة لاختيارها بسهولة لاحقاً",
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth()
@@ -881,10 +685,10 @@ fun MapV4(role: String) {
     if (showConfirm) {
         AlertDialog(
             onDismissRequest = { if (!isLoading) showConfirm = false },
-            title = { Text("تأكيد - شبكة أمان") },
+            title = { Text("تأكيد طلب المشوار") },
             text = {
                 Text(
-                    "من: $pickupAddr\nإلى: $dropoffAddr\n📏 %.2f كم - 💰 $price ج\n✅ السعر للرحلة كاملة\n${if (femaleMode) "👩 وضع الستات مفعل\n" else ""}جاري إرسال الطلب...\n(لو السيرفر نايم أول مرة ممكن تاخد دقيقة)".format(
+                    "من: $pickupAddr\nإلى: $dropoffAddr\nالمسافة: %.2f كم تقريباً\nالسائقون سيرسلون عروض السعر ووقت الوصول، وبعدها تختار العرض المناسب.".format(
                         km
                     )
                 )
@@ -895,25 +699,33 @@ fun MapV4(role: String) {
                         if (pickup == null || dropoff == null) return@Button
                         isLoading = true
                         scope.launch {
-                            val uid = getOrCreateUserId(ctx)
-                            val name = getUserName(ctx)
-                            val phone = getUserPhone(ctx)
-                            val res = createRideOnServer(
-                                uid, name, phone,
-                                pickupAddr, dropoffAddr,
-                                pickup!!, dropoff!!,
-                                km, price, rideType, femaleMode, withLuggage
-                            )
-                            isLoading = false
-                            showConfirm = false
-                            if (res != null && res.optBoolean("success", false)) {
-                                code = res.optString("security_code", code)
-                                resultMsg =
-                                    "✅ تم إنشاء الرحلة #${res.optInt("ride_id")}\nكود الأمان: $code\nجاري البحث عن سواقين..."
-                            } else {
-                                val detail =
-                                    res?.optString("detail") ?: "فشل الاتصال بالسيرفر - جرب تاني أو استخدم SMS"
-                                resultMsg = "❌ $detail"
+                            try {
+                                val phone = getUserPhone(ctx)
+                                if (phone.isBlank()) {
+                                    resultMsg = "أضف رقم هاتفك من شاشة الحساب قبل طلب الرحلة."
+                                    return@launch
+                                }
+                                val uid = FirebaseAuth.getInstance().currentUser?.uid
+                                    ?: error("انتهت جلسة Firebase")
+                                val name = getUserName(ctx)
+                                val rideId = FirebaseRidesRepository().createRide(
+                                    customerId = uid,
+                                    customerName = name,
+                                    customerPhone = phone,
+                                    fromAddress = pickupAddr,
+                                    toAddress = dropoffAddr,
+                                    from = pickup!!,
+                                    to = dropoff!!,
+                                    distanceKm = km,
+                                    femaleMode = femaleMode,
+                                    withLuggage = withLuggage
+                                )
+                                onRideCreated(rideId)
+                            } catch (_: Exception) {
+                                resultMsg = "تعذر إنشاء الطلب. تحقق من الاتصال وإعداد Firebase ثم حاول مرة أخرى."
+                            } finally {
+                                isLoading = false
+                                showConfirm = false
                             }
                         }
                     },
@@ -955,7 +767,7 @@ fun MapV4(role: String) {
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        "محفوظ على جهازك ومش بيتمسح إلا بمسح التطبيق",
+                        "محفوظ على هذا الجهاز فقط",
                         fontSize = 10.sp,
                         color = Color.Gray
                     )
@@ -988,185 +800,29 @@ fun MapV4(role: String) {
 }
 
 @Composable
-fun RidesV4(nav: NavController, role: String) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var rides by remember { mutableStateOf<List<RideItem>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var acceptMsg by remember { mutableStateOf<String?>(null) }
-
-    fun refresh() {
-        loading = true
-        error = null
-        scope.launch {
-            try {
-                if (role == "driver") {
-                    // استخدام مركز سيدي سالم كافتراضي لو مفيش موقع
-                    rides = fetchNearbyRides(Config.LAT, Config.LON)
-                } else {
-                    val uid = getOrCreateUserId(ctx)
-                    rides = fetchCustomerRides(uid)
-                }
-            } catch (e: Exception) {
-                error = e.message
-            }
-            loading = false
-        }
-    }
-
-    LaunchedEffect(Unit) { refresh() }
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                if (role == "driver") "📜 الطلبات القريبة" else "📜 رحلاتي",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-            IconButton(onClick = { refresh() }) {
-                Icon(Icons.Default.Refresh, contentDescription = "تحديث")
-            }
-        }
-        Text(
-            if (role == "driver") "اضغط قبول عشان تاخد الرحلة" else "آخر الرحلات من السيرفر",
-            fontSize = 11.sp,
-            color = Color.Gray
-        )
-        Spacer(Modifier.height(12.dp))
-
-        if (loading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        } else if (error != null) {
-            Text("❌ $error", color = Color.Red)
-            Button(onClick = { refresh() }) { Text("إعادة المحاولة") }
-        } else if (rides.isEmpty()) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("مفيش رحلات حالياً", fontWeight = FontWeight.Bold)
-                    Text(
-                        if (role == "driver") "استنى طلبات جديدة أو حدّث"
-                        else "اطلب رحلة من الخريطة",
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    if (role != "driver") {
-                        Button(onClick = { nav.navigate("map") }) { Text("اطلب دلوقتي") }
-                    }
-                }
-            }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(rides) { ride ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    "${ride.from.take(25)} → ${ride.to.take(25)}",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    "${ride.price}ج",
-                                    color = Color(0xFF0D7C3E),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Text(
-                                "الحالة: ${ride.status} | %.1f كم".format(ride.distanceKm) +
-                                        if (ride.securityCode.isNotBlank()) " | كود: ${ride.securityCode}" else "",
-                                fontSize = 11.sp,
-                                color = Color.Gray
-                            )
-                            if (ride.driverName != null) {
-                                Text("السائق: ${ride.driverName}", fontSize = 11.sp)
-                            }
-                            if (role == "driver" && ride.status == "pending") {
-                                Spacer(Modifier.height(8.dp))
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            val uid = getOrCreateUserId(ctx)
-                                            val name = getUserName(ctx)
-                                            val res = acceptRideOnServer(ride.id, uid, name)
-                                            if (res != null && res.optBoolean("success", false)) {
-                                                acceptMsg =
-                                                    "✅ تم قبول الرحلة\nكود الأمان: ${res.optString("security_code")}\nالراكب: ${res.optString("customer_phone")}"
-                                                refresh()
-                                            } else {
-                                                acceptMsg =
-                                                    "❌ ${res?.optString("detail") ?: "فشل القبول - ممكن اتاخدت"}"
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) { Text("قبول الرحلة") }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (acceptMsg != null) {
-        AlertDialog(
-            onDismissRequest = { acceptMsg = null },
-            title = { Text("نتيجة") },
-            text = { Text(acceptMsg!!) },
-            confirmButton = {
-                Button(onClick = { acceptMsg = null }) { Text("حسناً") }
-            }
-        )
-    }
-}
-
-@Composable
 fun WalletV4() {
     Column(
         Modifier
             .fillMaxSize()
             .padding(16.dp)
-            .verticalScroll(rememberScrollState())
     ) {
         Text("💳 محفظتي ونقاطي", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF4F4F4)),
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("الرصيد", fontSize = 12.sp, color = Color.Gray)
-                Text("0 ج", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0D7C3E))
-                Text("نقاط الولاء: 0", fontSize = 12.sp)
+            Column(Modifier.padding(20.dp)) {
+                Text("المحفظة غير مفعلة حالياً", fontWeight = FontWeight.Bold)
+                Text("لن يظهر رصيد أو نقاط قبل ربط خدمة الدفع.", fontSize = 12.sp, color = Color.Gray)
             }
         }
-        Spacer(Modifier.height(16.dp))
-        Text("قريباً: شحن محفظة + خصومات + باقة العيلة", fontSize = 12.sp, color = Color.Gray)
     }
 }
 
 @Composable
-fun AccountV4(nav: NavController) {
+fun AccountV4(onRoleChanged: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
@@ -1197,7 +853,7 @@ fun AccountV4(nav: NavController) {
         OutlinedTextField(
             value = phone,
             onValueChange = { phone = it },
-            label = { Text("رقم الموبايل") },
+            label = { Text("رقم الموبايل (مطلوب لطلب الرحلة)") },
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(12.dp))
@@ -1231,16 +887,11 @@ fun AccountV4(nav: NavController) {
                     ctx.dataStore.edit {
                         it.remove(stringPreferencesKey("role"))
                     }
-                    // Force restart flow - user needs to reopen app or we navigate
+                    onRoleChanged()
                 }
             },
             modifier = Modifier.fillMaxWidth()
         ) { Text("تغيير الدور (راكب / سائق)") }
-        Text(
-            "بعد الضغط اقفل التطبيق وافتحه تاني عشان تختار الدور من الأول",
-            fontSize = 10.sp,
-            color = Color.Gray
-        )
     }
 }
 
