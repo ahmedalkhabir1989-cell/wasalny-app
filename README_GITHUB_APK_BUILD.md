@@ -3,7 +3,7 @@
 ## قبل البناء
 
 1. تأكد من إعداد Firebase وFirestore حسب [FIRESTORE_SETUP_AR.md](FIRESTORE_SETUP_AR.md).
-2. أضف سر `MAPS_API_KEY` في GitHub Actions لاستخدام خرائط Google.
+2. يستخدم التطبيق OpenStreetMap، ولا يحتاج مفتاح Google Maps؛ يلزم اتصال إنترنت لعرض الخريطة.
 
 ## البناء والتنزيل
 

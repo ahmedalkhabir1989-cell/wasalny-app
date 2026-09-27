@@ -5,10 +5,11 @@
 - ارفع **محتويات هذا المجلد** إلى جذر الـ Repository.
 - تأكد أن الملف `.github/workflows/build-apk.yml` موجود.
 
-## 2) إعداد Firebase وخرائط Google
+## 2) إعداد Firebase
 - فعّل Anonymous Authentication وأنشئ Firestore.
 - انشر قواعد Firestore والفهارس من [FIRESTORE_SETUP_AR.md](FIRESTORE_SETUP_AR.md).
-- أضف `MAPS_API_KEY` كـ GitHub Actions secret إذا لم يكن مفتاح الخرائط مضبوطاً محلياً.
+- لا يحتاج عرض OpenStreetMap إلى مفتاح Google Maps أو GitHub Actions secret للخرائط.
+- يلزم اتصال إنترنت لتحميل بلاطات الخريطة.
 
 ## 3) تشغيل البناء
 من GitHub:
