@@ -3,6 +3,8 @@
 build/
 **/build/
 local.properties
+keystore.properties
+*.jks
 
 # IDE files
 .idea/
