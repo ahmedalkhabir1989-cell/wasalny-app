@@ -24,12 +24,6 @@ android {
         versionCode = 6
         versionName = "4.1.1"
 
-        // Read the Maps key from Secrets, environment, or gradle.properties.
-        val mapsKey = providers.gradleProperty("MAPS_API_KEY").orNull?.takeIf { it.isNotBlank() }
-            ?: providers.environmentVariable("MAPS_API_KEY").orNull?.takeIf { it.isNotBlank() }
-            ?: "YOUR_GOOGLE_MAPS_API_KEY_HERE"
-        manifestPlaceholders["MAPS_API_KEY"] = mapsKey
-
     }
 
     signingConfigs {
@@ -89,9 +83,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.7.6")
     implementation("androidx.datastore:datastore-preferences:1.0.0")
-    implementation("com.google.android.gms:play-services-maps:18.2.0")
     implementation("com.google.android.gms:play-services-location:21.2.0")
-    implementation("com.google.maps.android:maps-compose:4.3.3")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))

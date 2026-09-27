@@ -10,8 +10,9 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
-import com.google.android.gms.maps.model.LatLng
 import kotlin.math.*
+
+data class Coordinate(val latitude: Double, val longitude: Double)
 
 data class RideRecord(
     val id: String,
@@ -131,7 +132,7 @@ class FirebaseRidesRepository(
         }
     }
 
-    suspend fun publishDriverLocation(uid: String, name: String, point: LatLng): Boolean {
+    suspend fun publishDriverLocation(uid: String, name: String, point: Coordinate): Boolean {
         val ref = drivers.document(uid)
         val snapshot = ref.get().await()
         if (!snapshot.exists()) ensureDriverProfile(uid, name)
@@ -165,8 +166,8 @@ class FirebaseRidesRepository(
         customerPhone: String,
         fromAddress: String,
         toAddress: String,
-        from: LatLng,
-        to: LatLng,
+        from: Coordinate,
+        to: Coordinate,
         distanceKm: Double,
         femaleMode: Boolean,
         withLuggage: Boolean
@@ -203,7 +204,7 @@ class FirebaseRidesRepository(
 
     suspend fun runSearch(
         rideId: String,
-        pickup: LatLng,
+        pickup: Coordinate,
         onStage: (Int, Int) -> Unit
     ) {
         val rideRef = rides.document(rideId)
@@ -255,7 +256,7 @@ class FirebaseRidesRepository(
         ).await()
     }
 
-    private suspend fun findAvailableDrivers(center: LatLng, radiusMeters: Int): List<DocumentSnapshot> {
+    private suspend fun findAvailableDrivers(center: Coordinate, radiusMeters: Int): List<DocumentSnapshot> {
         val bounds = GeoFireUtils.getGeoHashQueryBounds(
             GeoLocation(center.latitude, center.longitude), radiusMeters.toDouble()
         )

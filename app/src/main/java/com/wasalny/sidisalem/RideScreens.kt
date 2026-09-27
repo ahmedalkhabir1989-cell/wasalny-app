@@ -21,7 +21,6 @@ import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.ListenerRegistration
@@ -65,7 +64,7 @@ private fun CustomerRideOffersScreen(rideId: String, customerId: String, nav: Na
                 ?: throw IllegalStateException("الرحلة غير موجودة أو لا تملك صلاحية عرضها")
             ride = currentRide
             if (currentRide.status == "searching") {
-                repository.runSearch(rideId, LatLng(currentRide.fromLat, currentRide.fromLon)) { radius, count ->
+                repository.runSearch(rideId, Coordinate(currentRide.fromLat, currentRide.fromLon)) { radius, count ->
                     stageMessage = if (count == 0) {
                         "لا يوجد سائق متاح في النطاق الحالي. جارٍ توسيع البحث..."
                     } else {
@@ -107,7 +106,7 @@ private fun CustomerRideOffersScreen(rideId: String, customerId: String, nav: Na
                 scope.launch {
                     val currentRide = repository.getRide(rideId)
                     if (currentRide?.status == "searching") {
-                        repository.runSearch(rideId, LatLng(currentRide.fromLat, currentRide.fromLon)) { radius, count ->
+                        repository.runSearch(rideId, Coordinate(currentRide.fromLat, currentRide.fromLon)) { radius, count ->
                             stageMessage = "نطاق البحث ${radius}م، سائقون جدد: $count"
                         }
                     }
@@ -281,7 +280,7 @@ private fun DriverRideRequestsScreen(driverId: String) {
                         repository.publishDriverLocation(
                             driverId,
                             getUserName(context),
-                            LatLng(location.latitude, location.longitude)
+                            Coordinate(location.latitude, location.longitude)
                         )
                         error = null
                     } else {

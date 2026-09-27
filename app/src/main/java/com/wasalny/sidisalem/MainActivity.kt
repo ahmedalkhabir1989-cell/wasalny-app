@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -43,9 +44,6 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.*
 import com.google.firebase.auth.FirebaseAuth
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +51,16 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import org.osmdroid.config.Configuration
+import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.GeoPoint as OsmGeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.CopyrightOverlay
+import org.osmdroid.views.overlay.MapEventsOverlay
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polygon
+import org.osmdroid.views.overlay.Polyline
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -65,7 +73,7 @@ object Config {
     const val LON = 30.786165
     const val RADIUS_KM = 5.0
     const val PHONE = "01069631950"
-    val CENTER = LatLng(LAT, LON)
+    val CENTER = Coordinate(LAT, LON)
 }
 
 data class FavPlace(val name: String, val address: String, val lat: Double, val lon: Double)
@@ -81,7 +89,7 @@ fun distKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
 fun inside(lat: Double, lon: Double) =
     distKm(lat, lon, Config.LAT, Config.LON) <= Config.RADIUS_KM
 
-suspend fun geocode(context: Context, point: LatLng): String = withContext(Dispatchers.IO) {
+suspend fun geocode(context: Context, point: Coordinate): String = withContext(Dispatchers.IO) {
     try {
         @Suppress("DEPRECATION")
         val addresses = Geocoder(context, Locale("ar")).getFromLocation(point.latitude, point.longitude, 1)
@@ -466,6 +474,100 @@ fun DriverHomeV4(nav: NavController) {
 }
 
 @Composable
+private fun OpenStreetMapView(
+    modifier: Modifier,
+    pickup: Coordinate?,
+    dropoff: Coordinate?,
+    pickupAddress: String,
+    dropoffAddress: String,
+    mapCenter: Coordinate,
+    mapZoom: Float,
+    onMapClick: (Coordinate) -> Unit
+) {
+    val latestOnMapClick by rememberUpdatedState(onMapClick)
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            Configuration.getInstance().userAgentValue = context.packageName
+            MapView(context).apply {
+                setTileSource(TileSourceFactory.MAPNIK)
+                setMultiTouchControls(true)
+                controller.setZoom(mapZoom.toDouble())
+                controller.setCenter(OsmGeoPoint(mapCenter.latitude, mapCenter.longitude))
+                tag = mapCenter to mapZoom
+                overlays.add(MapEventsOverlay(object : MapEventsReceiver {
+                    override fun singleTapConfirmedHelper(point: OsmGeoPoint?): Boolean {
+                        point ?: return false
+                        latestOnMapClick(Coordinate(point.latitude, point.longitude))
+                        return true
+                    }
+
+                    override fun longPressHelper(point: OsmGeoPoint?): Boolean = false
+                }))
+                overlays.add(CopyrightOverlay(context))
+                onResume()
+            }
+        },
+        update = { map ->
+            val target = mapCenter to mapZoom
+            if (map.tag != target) {
+                map.controller.setCenter(OsmGeoPoint(mapCenter.latitude, mapCenter.longitude))
+                map.controller.setZoom(mapZoom.toDouble())
+                map.tag = target
+            }
+            map.overlays.removeAll(map.overlays.filter {
+                it is Marker || it is Polyline || it is Polygon
+            })
+
+            val serviceArea = Polygon().apply {
+                points = Polygon.pointsAsCircle(
+                    OsmGeoPoint(Config.CENTER.latitude, Config.CENTER.longitude),
+                    Config.RADIUS_KM * 1000
+                )
+                fillPaint.color = android.graphics.Color.argb(34, 13, 124, 62)
+                outlinePaint.color = android.graphics.Color.rgb(13, 124, 62)
+                outlinePaint.strokeWidth = 2f
+            }
+            map.overlays.add(serviceArea)
+
+            if (pickup != null && dropoff != null) {
+                map.overlays.add(Polyline().apply {
+                    setPoints(
+                        listOf(
+                            OsmGeoPoint(pickup.latitude, pickup.longitude),
+                            OsmGeoPoint(dropoff.latitude, dropoff.longitude)
+                        )
+                    )
+                    outlinePaint.color = android.graphics.Color.rgb(13, 124, 62)
+                    outlinePaint.strokeWidth = 8f
+                })
+            }
+            pickup?.let { point ->
+                map.overlays.add(Marker(map).apply {
+                    position = OsmGeoPoint(point.latitude, point.longitude)
+                    title = "من هنا"
+                    snippet = pickupAddress
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                })
+            }
+            dropoff?.let { point ->
+                map.overlays.add(Marker(map).apply {
+                    position = OsmGeoPoint(point.latitude, point.longitude)
+                    title = "إلى هنا"
+                    snippet = dropoffAddress
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                })
+            }
+            map.invalidate()
+        },
+        onRelease = { map ->
+            map.onPause()
+            map.onDetach()
+        }
+    )
+}
+
+@Composable
 fun MapV4(
     role: String,
     initialDestination: FavPlace? = null,
@@ -474,10 +576,12 @@ fun MapV4(
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val fused = remember { LocationServices.getFusedLocationProviderClient(ctx) }
-    var pickup by remember { mutableStateOf<LatLng?>(null) }
+    var pickup by remember { mutableStateOf<Coordinate?>(null) }
     var dropoff by remember(initialDestination) {
-        mutableStateOf(initialDestination?.let { LatLng(it.lat, it.lon) })
+        mutableStateOf(initialDestination?.let { Coordinate(it.lat, it.lon) })
     }
+    var mapCenter by remember { mutableStateOf(Config.CENTER) }
+    var mapZoom by remember { mutableFloatStateOf(14.5f) }
     var pickupAddr by remember { mutableStateOf("") }
     var dropoffAddr by remember(initialDestination) {
         mutableStateOf(initialDestination?.address.orEmpty())
@@ -492,9 +596,6 @@ fun MapV4(
     var showConfirm by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var resultMsg by remember { mutableStateOf<String?>(null) }
-    val cam = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(Config.CENTER, 14.5f)
-    }
     val hasLocationPermission =
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED ||
@@ -512,11 +613,12 @@ fun MapV4(
                             CancellationTokenSource().token
                         ).await() ?: fused.lastLocation.await()
                         loc?.let {
-                            val ll = LatLng(it.latitude, it.longitude)
+                            val ll = Coordinate(it.latitude, it.longitude)
                             pickup = ll
                             pickupAddr = geocode(ctx, ll)
                             selectingPickup = false
-                            cam.position = CameraPosition.fromLatLngZoom(ll, 16f)
+                            mapCenter = ll
+                            mapZoom = 16f
                         }
                     } catch (_: Exception) {
                     }
@@ -543,56 +645,34 @@ fun MapV4(
     val isInside = pickup?.let { inside(it.latitude, it.longitude) } ?: true
 
     Box(Modifier.fillMaxSize()) {
-        GoogleMap(
+        OpenStreetMapView(
             modifier = Modifier.fillMaxSize(),
-            cameraPositionState = cam,
-            properties = MapProperties(isMyLocationEnabled = hasLocationPermission),
-            uiSettings = MapUiSettings(
-                zoomControlsEnabled = false,
-                myLocationButtonEnabled = hasLocationPermission
-            ),
-            onMapClick = { ll ->
+            pickup = pickup,
+            dropoff = dropoff,
+            pickupAddress = pickupAddr,
+            dropoffAddress = dropoffAddr,
+            mapCenter = mapCenter,
+            mapZoom = mapZoom,
+            onMapClick = { point ->
                 scope.launch {
                     if (selectingPickup) {
-                        pickup = ll
-                        pickupAddr = geocode(ctx, ll)
+                        pickup = point
+                        pickupAddr = geocode(ctx, point)
                         selectingPickup = false
                     } else {
-                        dropoff = ll
-                        dropoffAddr = geocode(ctx, ll)
+                        dropoff = point
+                        dropoffAddr = geocode(ctx, point)
                     }
                 }
             }
-        ) {
-            pickup?.let {
-                Marker(
-                    state = MarkerState(it),
-                    title = "من هنا",
-                    snippet = pickupAddr
-                )
-            }
-            dropoff?.let {
-                Marker(
-                    state = MarkerState(it),
-                    title = "إلى هنا",
-                    snippet = dropoffAddr
-                )
-            }
-            if (pickup != null && dropoff != null) {
-                Polyline(
-                    points = listOf(pickup!!, dropoff!!),
-                    color = Color(0xFF0D7C3E),
-                    width = 8f
-                )
-            }
-            Circle(
-                center = Config.CENTER,
-                radius = Config.RADIUS_KM * 1000,
-                fillColor = Color(0x220D7C3E),
-                strokeColor = Color(0xFF0D7C3E),
-                strokeWidth = 2f
-            )
-        }
+        )
+
+        Text(
+            "© OpenStreetMap contributors",
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 230.dp),
+            color = Color.DarkGray,
+            fontSize = 10.sp
+        )
 
         // Top controls
         Column(
